@@ -1,3 +1,9 @@
+#include "arch_emulator.hpp"
+#include "hook_interface.hpp"
+#include "memory_utils.hpp"
+#include "module/mapped_module.hpp"
+#include "network/tcp_client_socket.hpp"
+#include "network/tcp_server_socket.hpp"
 #include "std_include.hpp"
 
 #include <windows_emulator.hpp>
@@ -9,6 +15,7 @@
 #include "snapshot.hpp"
 #include "analysis.hpp"
 #include "tenet_tracer.hpp"
+#include "utils/function.hpp"
 
 #include <utils/finally.hpp>
 #include <utils/interupt_handler.hpp>
@@ -22,6 +29,7 @@ namespace
     struct analysis_options : analysis_settings
     {
         mutable bool use_gdb{false};
+        mutable bool use_ida{false};
         bool log_executable_access{false};
         bool tenet_trace{false};
         std::filesystem::path dump{};
@@ -119,7 +127,31 @@ namespace
         }
     }
 
-    bool run_emulation(const analysis_context& c, const analysis_options& options)
+    network::tcp_client_socket accept_client(
+        const network::address& bind_address, 
+        const utils::optional_function<bool()>& should_stop)
+    {
+        network::tcp_server_socket server{bind_address.get_family()};
+        if (!server.bind(bind_address))
+        {
+            return false;
+        }
+
+        server.set_blocking(false);
+        server.listen();
+
+        while (true)
+        {
+            if (should_stop() || server.sleep(100ms))
+            {
+                break;
+            }
+        }
+
+        return server.accept();
+    }
+    
+    bool run_emulation(analysis_context& c, const analysis_options& options)
     {
         auto& win_emu = *c.win_emu;
 
@@ -144,9 +176,69 @@ namespace
             debugger::handle_exit(win_emu, exit_status); //
         });
 #endif
-
         try
         {
+            if (options.use_ida)
+            {
+                const auto* address = "127.0.0.1:28961";
+                win_emu.log.print(color::pink, "Ready to accept IDA client on %s\n", address);
+
+                const auto should_stop = [&] { return signals_received > 0; };
+
+                network::tcp_client_socket ida_client;
+
+                std::thread t([&](){
+                    ida_client = accept_client(network::address{"0.0.0.0:28961", AF_INET}, should_stop);             
+                    win_emu.log.print(color::pink, "IDA client accepted... populating segments\n");
+
+                    // win_emu.setup_process_if_necessary()
+
+                    // for(const auto& section : win_emu.process.sections)
+                    // {
+                    //     const auto handle = section.first;
+                    //     const auto scn = section.second;   
+
+                    //     // scn.section_page_protection
+                    //     ida_client.send(std::format("map_section:{}:{}:{}", handle, scn.maximum_size, scn.name));
+                    // }
+
+                    for (const auto& section : win_emu.mod_manager.executable->sections)
+                    {
+                        const auto& region = section.region;
+                        const auto perms = get_permission_string(region.permissions);
+
+                        const auto packet = std::format(
+                            "map_section:{}:{}:{}:{}", section.name, region.start, region.length, perms
+                        );
+
+                        ida_client.send(packet);
+                    }
+
+                    
+                    
+                    // for(const auto& region : win_emu.memory.get_reserved_regions())
+                    // {
+                    //     const auto addr = region.first;
+                    //     const auto reserved_region = region.second; 
+
+                    //     for(auto commited_region : reserved_region.committed_regions)
+                    //     {
+                    //         commited_region.second.
+                    //     }
+
+                    //     // win_emu.log.print(color::pink, "");
+                    // }
+
+                    win_emu.callbacks.on_module_load = [&](mapped_module& mod) {
+                        c.win_emu->log.log("Mapped %s at 0x%" PRIx64 "\n", mod.path.generic_string().c_str(), mod.image_base);
+                        ida_client.send(std::format("module_load:{}:{}", mod.name, mod.image_base));
+                        c.win_emu->emu().stop();
+                    };
+                });
+
+                t.detach();
+            }
+            
             if (options.use_gdb)
             {
                 const auto* address = "127.0.0.1:28960";
@@ -156,6 +248,7 @@ namespace
 
                 win_x64_gdb_stub_handler handler{win_emu, should_stop};
                 gdb_stub::run_gdb_stub(network::address{"0.0.0.0:28960", AF_INET}, handler);
+
             }
             else if (!options.minidump_path.empty())
             {
@@ -438,6 +531,10 @@ namespace
             else if (arg == "-d" || arg == "--debug")
             {
                 options.use_gdb = true;
+            }
+            else if (arg == "-z" || arg == "--ida")
+            {
+                options.use_ida = true;
             }
             else if (arg == "-s" || arg == "--silent")
             {
