@@ -1,0 +1,8 @@
+include_guard(DIRECTORY)
+if (DEFINED IDASDK)
+    include(cmake/ida/common.cmake)
+elseif (DEFINED ENV{IDASDK})
+    include(cmake/ida/common.cmake)
+else()
+    message(FATAL_ERROR "IDA SDK folder not specified via the -D switch or the environment variable 'IDASDK'")
+endif()

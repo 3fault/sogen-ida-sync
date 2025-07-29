@@ -54,6 +54,14 @@ endif()
 
 ##########################################
 
+if(MOMO_ENABLE_IDA_SYNC)
+  add_compile_definitions(MOMO_ENABLE_IDA_SYNC=1)
+else()
+  add_compile_definitions(MOMO_ENABLE_IDA_SYNC=0)
+endif()
+
+##########################################
+
 if(UNIX)
   momo_add_c_and_cxx_compile_options(
     -fvisibility=hidden
