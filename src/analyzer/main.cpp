@@ -202,17 +202,17 @@ namespace
                     //     ida_client.send(std::format("map_section:{}:{}:{}", handle, scn.maximum_size, scn.name));
                     // }
 
-                    for (const auto& section : win_emu.mod_manager.executable->sections)
-                    {
-                        const auto& region = section.region;
-                        const auto perms = get_permission_string(region.permissions);
+                    // for (const auto& section : win_emu.mod_manager.executable->sections)
+                    // {
+                    //     const auto& region = section.region;
+                    //     const auto perms = get_permission_string(region.permissions);
 
-                        const auto packet = std::format(
-                            "map_section:{}:{}:{}:{}", section.name, region.start, region.length, perms
-                        );
+                    //     const auto packet = std::format(
+                    //         "map_section:{}:{}:{}:{}", section.name, region.start, region.length, perms
+                    //     );
 
-                        ida_client.send(packet);
-                    }
+                    //     ida_client.send(packet);
+                    // }
 
                     
                     
@@ -231,8 +231,28 @@ namespace
 
                     win_emu.callbacks.on_module_load = [&](mapped_module& mod) {
                         c.win_emu->log.log("Mapped %s at 0x%" PRIx64 "\n", mod.path.generic_string().c_str(), mod.image_base);
-                        ida_client.send(std::format("module_load:{}:{}", mod.name, mod.image_base));
-                        c.win_emu->emu().stop();
+
+                        for (auto scn : mod.sections)
+                        {
+                            const auto perms = get_permission_string(scn.region.permissions);
+
+                            const auto packet = std::format(
+                                "s+:{}:{:#016x}:{}:{};", 
+                                // scn.name, 
+                                mod.name,
+                                scn.region.start,
+                                scn.region.length,
+                                perms
+                            );
+                            c.win_emu->log.print(color::blue, "Add Segment: %s\n", packet.c_str());
+
+                            ida_client.send(packet);
+                        }
+
+                        const auto packet = std::format("m+:{}:{:#016x}:{};", mod.name, mod.image_base, mod.size_of_image);
+                        c.win_emu->log.print(color::blue, "Module Load: %s\n", packet.c_str());
+
+                        ida_client.send(packet);
                     };
                 });
 
